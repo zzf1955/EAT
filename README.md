@@ -7,6 +7,53 @@ We propose EAT, a QoS-aware Edge-collaborative AIGC Task Scheduling algorithm. I
 
 ![example](https://github.com/user-attachments/assets/268bdfa6-ebdf-4937-9056-9e77215a51eb)
 
+<div style="display: flex; flex-wrap: wrap; gap: 20px; justify-content: center;">
+
+<div style="flex: 1 0 22%; min-width: 200px;">
+    <p style="color: #777; text-align: center; margin: 0;">Original Image 1</p>
+    <img src="example/image1.jpg" alt="Example 1" style="width: 100%;">
+</div>
+
+<div style="flex: 1 0 22%; min-width: 200px;">
+    <p style="color: #777; text-align: center; margin: 0;">Original Image 2</p>
+    <img src="example/image2.jpg" alt="Example 2" style="width: 100%;">
+</div>
+
+<div style="flex: 1 0 22%; min-width: 200px;">
+    <p style="color: #777; text-align: center; margin: 0;">Original Image 3</p>
+    <img src="example/image3.jpg" alt="Example 3" style="width: 100%;">
+</div>
+
+<div style="flex: 1 0 22%; min-width: 200px;">
+    <p style="color: #777; text-align: center; margin: 0;">Original Image 4</p>
+    <img src="example/image4.jpg" alt="Example 4" style="width: 100%;">
+</div>
+
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 20px; justify-content: center;">
+
+<div style="flex: 1 0 22%; min-width: 200px;">
+    <p style="color: #777; text-align: center; margin: 0;">Processed Image 1</p>
+    <img src="example/result1.jpg" alt="Result 1" style="width: 100%;">
+</div>
+
+<div style="flex: 1 0 22%; min-width: 200px;">
+    <p style="color: #777; text-align: center; margin: 0;">Processed Image 2</p>
+    <img src="example/result2.jpg" alt="Result 2" style="width: 100%;">
+</div>
+
+<div style="flex: 1 0 22%; min-width: 200px;">
+    <p style="color: #777; text-align: center; margin: 0;">Processed Image 3</p>
+    <img src="example/result3.jpg" alt="Result 3" style="width: 100%;">
+</div>
+
+<div style="flex: 1 0 22%; min-width: 200px;">
+    <p style="color: #777; text-align: center; margin: 0;">Processed Image 4</p>
+    <img src="example/result4.jpg" alt="Result 4" style="width: 100%;">
+</div>
+
+</div>
 
 
 
