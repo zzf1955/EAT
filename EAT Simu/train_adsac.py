@@ -1,210 +1,184 @@
 import os
-import torch
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Tuple
+
 import numpy as np
-import argparse
-import itertools
-from torch import nn
+import torch
+from torch import nn, optim
 from torch.utils.tensorboard import SummaryWriter
+
 from tianshou.data import Collector, VectorReplayBuffer
-from tianshou.utils import TensorboardLogger
-from tianshou.utils.net.common import Net
-from tianshou.utils.net.continuous import ActorProb, Critic 
 from tianshou.policy import SACPolicy
 from tianshou.trainer import offpolicy_trainer
+from tianshou.utils import TensorboardLogger
+from tianshou.utils.net.common import Net
+from tianshou.utils.net.continuous import ActorProb, Critic
+
 from diffusion import Diffusion
 from diffusion.model import AttentionMLP
-from datetime import datetime
 from _SDEnv.env import make_env
 
-module_name = "adsac_policy.pth"
+@dataclass
+class TrainingConfig:
+    node_num: int = 8
+    queue_len: int = 10
+    max_task_arrival_rate: float = 0.15
+    min_task_arrival_rate: float = 0.15
+    co_num: Tuple[int] = (1, 2, 4, 8)
+    state_dim: int = 2
+    timesteps: int = 2
+    trait_dim: int = 256
+    
+    actor_hidden_dims: Tuple[int] = (256, 256)
+    critic_hidden_dims: Tuple[int] = (256, 256)
+    diffusion_steps: int = 10
+    
+    actor_lr: float = 3e-4
+    critic_lr: float = 3e-4
+    weight_decay: float = 0.005
+    alpha: float = 0.05
+    tau: float = 0.005
+    gamma: float = 0.95
+    n_step: int = 3
+    
+    buffer_size: int = 1000000
+    epochs: int = 5000
+    steps_per_epoch: int = 100
+    batch_size: int = 512
+    training_num: int = 1
+    test_num: int = 1
+    
+    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+    seed: int = 0
+    model_filename: str = "adsac_policy.pth"
+    log_root: Path = Path("experiments/adsac_diffusion")
 
-actor_lr = 3e-4
-critic_lr = 3e-4
-actor_hidden_dims = [256, 256]
-critic_hidden_dims = [256,256]
-diffusion_steps = 10
+def setup_environment(cfg):
+    return make_env(
+        training_num=cfg.training_num,
+        test_num=cfg.test_num,
+        queue_len=cfg.queue_len,
+        node_num=cfg.node_num,
+        co_num=cfg.co_num,
+        seed=cfg.seed,
+        state_dim=cfg.state_dim,
+        max_task_arrival_rate=cfg.max_task_arrival_rate,
+        min_task_arrival_rate=cfg.min_task_arrival_rate
+    )
 
-node_num = 8
-queue_len = 10
-
-max_task_arrival_rate = 0.15
-min_task_arrival_rate = 0.15
-T = 2
-
-trait_dim = 256
-co_num = [1,2,4,8]
-seed = 0
-
-alpha = 0.05
-tau = 0.005
-
-buffer_size = 1000000
-epoch = 5000
-step_per_epoch = 100
-episode_per_collect = 1
-episode_per_test = 1
-repeat_per_collect = 1
-update_per_step = 1
-batch_size = 512
-gamma = 0.95
-n_step = 3
-training_num = 1
-test_num = 1
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-wd = 0.005
-
-
-# Define actor and critic models separately
-def create_actor(state_shape, action_shape):
-    # Actor network
+def create_actor_components(state_dim, action_dim, cfg):
     actor_net = AttentionMLP(
-        state_dim= state_shape,
-        action_dim= trait_dim,
-        hidden_dim= actor_hidden_dims
+        state_dim=state_dim,
+        action_dim=cfg.trait_dim,
+        hidden_dim=cfg.actor_hidden_dims
     )
-    actor = Diffusion(
-        input_dim=state_shape,
-        output_dim=trait_dim,
-        model = actor_net,
-        max_action=1.,
-        n_timesteps=diffusion_steps
-    ).to(device)
-    actor_prob = ActorProb(
-        preprocess_net = actor,
-        action_shape = action_shape,
+    diffusion = Diffusion(
+        input_dim=state_dim,
+        output_dim=cfg.trait_dim,
+        model=actor_net,
+        max_action=1.0,
+        n_timesteps=cfg.diffusion_steps
+    ).to(cfg.device)
+    actor = ActorProb(
+        preprocess_net=diffusion,
+        action_shape=(action_dim,),
         unbounded=False,
-        device=device,
-        preprocess_net_output_dim = trait_dim
-    ).to(device)
-    actor_optim = torch.optim.Adam(
-        actor_prob.parameters(),
-        lr=actor_lr,
-        weight_decay=wd
+        device=cfg.device,
+        preprocess_net_output_dim=cfg.trait_dim
+    ).to(cfg.device)
+    optimizer = optim.Adam(
+        actor.parameters(),
+        lr=cfg.actor_lr,
+        weight_decay=cfg.weight_decay
     )
-    return actor_prob, actor_optim
+    return actor, optimizer
 
-
-def create_critic(state_shape, action_shape):
-    # Critic networks
-    net_c1 = Net(
-        state_shape,
-        action_shape,
-        hidden_sizes=critic_hidden_dims,
-        activation=nn.Mish,
-        concat=True,
-        device=device
-    )
-    critic1 = Critic(net_c1, device=device).to(device)
-    critic1_optim = torch.optim.Adam(
+def create_critic_components(state_dim, action_dim, cfg):
+    def _build_critic():
+        net = Net(
+            state_dim,
+            action_dim,
+            hidden_sizes=cfg.critic_hidden_dims,
+            activation=nn.Mish,
+            concat=True,
+            device=cfg.device
+        )
+        return Critic(net, device=cfg.device).to(cfg.device)
+    
+    critic1 = _build_critic()
+    critic1_optim = optim.Adam(
         critic1.parameters(),
-        lr=critic_lr,
-        weight_decay=wd
+        lr=cfg.critic_lr,
+        weight_decay=cfg.weight_decay
     )
-
-    net_c2 = Net(
-        state_shape,
-        action_shape,
-        hidden_sizes=critic_hidden_dims,
-        activation=nn.Mish,
-        concat=True,
-        device=device
-    )
-    critic2 = Critic(net_c2, device=device).to(device)
-    critic2_optim = torch.optim.Adam(
+    critic2 = _build_critic()
+    critic2_optim = optim.Adam(
         critic2.parameters(),
-        lr=critic_lr,
-        weight_decay=wd
+        lr=cfg.critic_lr,
+        weight_decay=cfg.weight_decay
     )
-
     return critic1, critic1_optim, critic2, critic2_optim
 
-def main():
+def setup_experiment(cfg):
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_dir = cfg.log_root / f"{cfg.node_num}nodes" / timestamp
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
 
-    # Create environment
-    env, train_envs, test_envs = make_env(training_num, test_num, 
-                                            queue_len=queue_len,
-                                            node_num=node_num,
-                                            co_num = co_num,
-                                            seed = seed,
-                                            state_dim=2,
-                                            max_task_arrival_rate = max_task_arrival_rate,
-                                            min_task_arrival_rate = min_task_arrival_rate,
-                                            T = T)
+def main(cfg):
+    env, train_envs, test_envs = setup_environment(cfg)
+    state_shape = env.observation_space.shape[0]
+    action_shape = env.action_space.shape[0]
 
-    state_shape = env.observation_space.shape or env.observation_space.n
-    action_shape = env.action_space.shape or env.action_space.n
-    state_shape = state_shape[0]
-    action_shape = action_shape[0]
-    print("state_dims:",state_shape)
-    print("action_dims:",action_shape)
-    print("avg_arrival_rate:",(min_task_arrival_rate+max_task_arrival_rate)/2)
+    np.random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
 
-    # Seed
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-    # log
-    time_now = datetime.now().strftime('%b%d-%H%M%S')
-
-    logdir = f"liner_subpro_{node_num}nodes_wq=10/{T}_{max_task_arrival_rate}_{min_task_arrival_rate}_{node_num}_{queue_len}_{co_num}"
-    log_path = os.path.join(
-        logdir, 'adsac', f'{trait_dim}_{actor_hidden_dims}_{critic_hidden_dims}', str(time_now)
-    )
-    log_res_path = os.path.join(
-        logdir, 'adsac_f', str(time_now)
-    )
-    writer = SummaryWriter(log_path)
+    log_dir = setup_experiment(cfg)
+    writer = SummaryWriter(log_dir)
     logger = TensorboardLogger(writer)
 
-    def save_best_fn(policy):
-        torch.save(policy.state_dict(), os.path.join(log_path, module_name))
+    actor, actor_optim = create_actor_components(state_shape, action_shape, cfg)
+    critic1, critic1_optim, critic2, critic2_optim = create_critic_components(state_shape, action_shape, cfg)
 
-    # Create actor and critic networks
-    actor, actor_optim = create_actor(state_shape, action_shape)
-    critic1, critic1_optim, critic2, critic2_optim = create_critic(state_shape, action_shape)
-
-    # Create policy
     policy = SACPolicy(
-        actor,
-        actor_optim,
-        critic1,
-        critic1_optim,
-        critic2,
-        critic2_optim,
-        tau=tau,
-        gamma=gamma,
-        alpha=alpha,
-        estimation_step=n_step,
+        actor=actor,
+        actor_optim=actor_optim,
+        critic1=critic1,
+        critic1_optim=critic1_optim,
+        critic2=critic2,
+        critic2_optim=critic2_optim,
+        tau=cfg.tau,
+        gamma=cfg.gamma,
+        alpha=cfg.alpha,
+        estimation_step=cfg.n_step,
     )
 
-    # collector
     train_collector = Collector(
-        policy, train_envs, VectorReplayBuffer(buffer_size, 1))
+        policy,
+        train_envs,
+        VectorReplayBuffer(cfg.buffer_size, len(train_envs))
+    )
     test_collector = Collector(policy, test_envs)
 
     result = offpolicy_trainer(
-        policy = policy,
-        train_collector = train_collector,
-        test_collector = test_collector,
-        max_epoch = epoch,
-        step_per_epoch = step_per_epoch,
-        episode_per_test = episode_per_test,
+        policy=policy,
+        train_collector=train_collector,
+        test_collector=test_collector,
+        max_epoch=cfg.epochs,
+        step_per_epoch=100,
         step_per_collect = None,
-        batch_size = batch_size,
-        save_best_fn=save_best_fn,
+        episode_per_test=1,
+        episode_per_collect=1,
+        batch_size=cfg.batch_size,
+        save_best_fn=lambda policy: torch.save(policy.state_dict(), log_dir / cfg.model_filename),
         logger=logger,
-        update_per_step=update_per_step,
-        episode_per_collect = episode_per_collect,
-        test_in_train=False,
+        test_in_train=False
     )
-    print(result)
 
-    if not os.path.isdir(log_res_path):
-        os.makedirs(log_res_path)
-    try:
-        torch.save(policy.state_dict(), os.path.join(log_res_path, module_name))
-    except:
-        torch.save(policy.state_dict(), os.path.join(log_path, module_name))
+    torch.save(policy.state_dict(), log_dir / f"final_{cfg.model_filename}")
 
-if __name__ == '__main__':    
-    main()
+if __name__ == "__main__":
+    config = TrainingConfig()
+    main(config)

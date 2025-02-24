@@ -292,7 +292,7 @@ class AIGCEnv(gym.Env):
         return reward
 
 def make_env(training_num=1, test_num=1, state_dim = 1,
-             node_num=10, queue_len=10, task_arrival_rate=0.5,
+             node_num=10, queue_len=10, task_arrival_rate=0.5,min_task_arrival_rate = 0.5,max_task_arrival_rate = 0.5,
              co_num = [1,2,4,8], seed = 233, cp = None, time_limite = 1024,max_draw_steps  =32,t = 0.1):
     if not cp:
         cp = [30]*node_num
